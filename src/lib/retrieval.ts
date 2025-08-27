@@ -1,7 +1,7 @@
 import { Types } from "mongoose";
 import { ChunkModel } from "@/models/Chunk";
 import { DocumentModel } from "@/models/Document";
-import { embedBatch } from "@/lib/embeddings";
+import { getEmbedding } from "@/lib/embeddings";
 import { dot } from "@/lib/similarity";
 
 export type RetrievedItem = {
@@ -31,7 +31,7 @@ export async function hybridRetrieve({
   bm25Limit = 20,
 }: RetrieveOpts): Promise<RetrievedItem[]> {
   // 1) embedding da query
-  const [qVec] = await embedBatch([query]);
+  const q = await getEmbedding(query);
 
   // 2) candidatos densos (com embedding armazenado)
   const denseCandidates = await ChunkModel.find(
