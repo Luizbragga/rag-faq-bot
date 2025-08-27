@@ -1,3 +1,4 @@
+// src/lib/retrieval.ts
 import { Types } from "mongoose";
 import { ChunkModel } from "@/models/Chunk";
 import { DocumentModel } from "@/models/Document";
@@ -9,7 +10,7 @@ export type RetrievedItem = {
   docId: string;
   docName?: string;
   text: string;
-  page?: number | null; // ⬅️ novo: número da página (quando vier de PDF)
+  page?: number | null; // número da página (quando vier de PDF)
   denseScore?: number;
   bm25Score?: number;
   fusedScore: number;
@@ -36,41 +37,43 @@ export async function hybridRetrieve({
   // 2) candidatos densos (com embedding armazenado)
   const denseCandidates = await ChunkModel.find(
     { tenantId, embedding: { $exists: true, $type: "array" } },
-    { embedding: 1, text: 1, docId: 1, page: 1 } // ⬅️ incluir page
+    { embedding: 1, text: 1, docId: 1, page: 1 }
   )
     .limit(denseLimit)
     .lean();
 
-  const denseRanked = denseCandidates
+  const denseRanked: RetrievedItem[] = denseCandidates
     .map((c: any) => ({
       _id: String(c._id),
       docId: String(c.docId),
       text: c.text,
-      page: typeof c.page === "number" ? c.page : null, // ⬅️ propagar page
+      page: typeof c.page === "number" ? c.page : null,
       denseScore: dot(q as number[], c.embedding as number[]),
-      fusedScore: 0, // será definido pelo RRF
+      fusedScore: 0,
     }))
-    .sort((a, b) => b.denseScore! - a.denseScore!)
+    .sort((a, b) => (b.denseScore ?? 0) - (a.denseScore ?? 0))
     .slice(0, 12)
     .map((c, i) => ({ ...c, fusedScore: 1 / (60 + i) })); // RRF parcial
 
   // 3) candidatos BM25 (índice textual do Mongo)
   const bm25Candidates = await ChunkModel.find(
     { tenantId, $text: { $search: query } },
-    { text: 1, docId: 1, page: 1, score: { $meta: "textScore" } as any } // ⬅️ incluir page
+    { text: 1, docId: 1, page: 1, score: { $meta: "textScore" } as any }
   )
     .sort({ score: { $meta: "textScore" } as any })
     .limit(bm25Limit)
     .lean();
 
-  const bm25Ranked = bm25Candidates.map((c: any, i: number) => ({
-    _id: String(c._id),
-    docId: String(c.docId),
-    text: c.text,
-    page: typeof c.page === "number" ? c.page : null, // ⬅️ propagar page
-    bm25Score: c.score as number,
-    fusedScore: 1 / (60 + i), // RRF parcial
-  }));
+  const bm25Ranked: RetrievedItem[] = bm25Candidates.map(
+    (c: any, i: number) => ({
+      _id: String(c._id),
+      docId: String(c.docId),
+      text: c.text,
+      page: typeof c.page === "number" ? c.page : null,
+      bm25Score: c.score as number,
+      fusedScore: 1 / (60 + i),
+    })
+  );
 
   // 4) Fusão por RRF
   const map = new Map<string, RetrievedItem>();
@@ -79,7 +82,7 @@ export async function hybridRetrieve({
     if (prev) {
       map.set(x._id, {
         ...prev,
-        page: prev.page ?? x.page, // mantém se já tiver
+        page: prev.page ?? x.page,
         denseScore: x.denseScore ?? prev.denseScore,
         bm25Score: x.bm25Score ?? prev.bm25Score,
         fusedScore: prev.fusedScore + x.fusedScore,
@@ -125,7 +128,7 @@ export async function hybridRetrieve({
       .select("_id name")
       .lean();
     const nameById = new Map<string, string>(
-      docs.map((d: any) => [String(d._id), d.name])
+      (docs as any[]).map((d) => [String(d._id), (d as any).name])
     );
     diversified = diversified.map((x) => ({
       ...x,
