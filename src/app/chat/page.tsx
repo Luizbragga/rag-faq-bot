@@ -3,186 +3,97 @@
 import { useState } from "react";
 
 type Citation = {
-  chunkId: string;
-  docId: string;
-  docName: string;
-  preview: string;
-  page?: number | null;
+  id: string;
+  name: string;
+  snippet: string;
+  page?: number;
 };
 
 export default function ChatPage() {
-  const [query, setQuery] = useState("");
-  const [answer, setAnswer] = useState<string | null>(null);
+  const [input, setInput] = useState("");
+  const [answer, setAnswer] = useState<string>("");
   const [cites, setCites] = useState<Citation[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string>("");
 
-  // feedback
-  const [logId, setLogId] = useState<string | null>(null);
-  const [sentFeedback, setSentFeedback] = useState<"up" | "down" | null>(null);
-  const [sendingFb, setSendingFb] = useState(false);
-
-  async function onAsk(e: React.FormEvent) {
-    e.preventDefault();
-    if (!query.trim()) return;
-    setLoading(true);
-    setError(null);
-    setAnswer(null);
+  async function handleAsk(e?: React.FormEvent) {
+    e?.preventDefault();
+    setErrorMsg("");
+    setAnswer("");
     setCites([]);
-    setLogId(null);
-    setSentFeedback(null);
+
+    const question = input.trim();
+    if (!question) return;
+
+    setLoading(true);
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tenantId: "demo", query }),
+        body: JSON.stringify({
+          question, // <<=== IMPORTANTE: 'question'
+          tenantId: "demo",
+        }),
       });
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || "Erro ao consultar");
-      setAnswer(data.answer as string);
-      setCites((data.citations as Citation[]) || []);
-      if (data.logId) setLogId(String(data.logId));
+
+      const json = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json.error || res.statusText);
+
+      setAnswer(json.answer || "(sem resposta)");
+      setCites(json.citations || []);
     } catch (err: any) {
-      setError(err.message || String(err));
+      setErrorMsg(`Erro: ${err.message}`);
     } finally {
       setLoading(false);
     }
   }
 
-  async function sendFeedback(fb: "up" | "down") {
-    if (!logId || sendingFb || sentFeedback) return;
-    setSendingFb(true);
-    try {
-      const res = await fetch("/api/feedback", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ logId, feedback: fb }),
-      });
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || "Erro ao enviar feedback");
-      setSentFeedback(fb);
-    } catch (e: any) {
-      alert(e?.message ?? "Falha ao enviar feedback");
-    } finally {
-      setSendingFb(false);
-    }
-  }
-
   return (
-    <main
-      style={{
-        maxWidth: 820,
-        margin: "40px auto",
-        padding: 16,
-        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-      }}
-    >
-      <h1 style={{ fontSize: 28, marginBottom: 12 }}>RAG FAQ – Demo</h1>
-      <form
-        onSubmit={onAsk}
-        style={{ display: "flex", gap: 8, marginBottom: 16 }}
-      >
+    <div className="max-w-3xl mx-auto px-4 py-8">
+      <h1 className="text-2xl font-semibold mb-4">RAG FAQ – Demo</h1>
+
+      <form onSubmit={handleAsk} className="flex gap-3">
         <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Digite sua pergunta… ex: horário de suporte"
-          style={{
-            flex: 1,
-            padding: "10px 12px",
-            borderRadius: 8,
-            border: "1px solid #ccc",
-          }}
+          className="flex-1 border rounded px-3 py-2"
+          placeholder="Pergunte algo…"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
         />
         <button
           type="submit"
+          className="px-4 py-2 rounded bg-black text-white disabled:opacity-60"
           disabled={loading}
-          style={{
-            padding: "10px 16px",
-            borderRadius: 8,
-            border: "1px solid #222",
-            background: "#111",
-            color: "#fff",
-          }}
         >
-          {loading ? "Consultando…" : "Perguntar"}
+          {loading ? "Perguntando..." : "Perguntar"}
         </button>
       </form>
 
-      {error && (
-        <div style={{ color: "#b00020", marginBottom: 12 }}>Erro: {error}</div>
-      )}
+      {errorMsg && <p className="mt-3 text-red-600 text-sm">{errorMsg}</p>}
 
       {answer && (
-        <section style={{ marginBottom: 20 }}>
-          <h2 style={{ fontSize: 18, marginBottom: 6 }}>Resposta</h2>
-          <p style={{ lineHeight: 1.6 }}>{answer}</p>
-
-          {/* Feedback */}
-          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-            <button
-              disabled={!logId || sendingFb || !!sentFeedback}
-              onClick={() => sendFeedback("up")}
-              title="Útil"
-              style={{
-                padding: "6px 10px",
-                borderRadius: 8,
-                border: "1px solid #ccc",
-                background:
-                  sentFeedback === "up" ? "rgba(0,200,0,.1)" : "transparent",
-              }}
-            >
-              👍 Útil
-            </button>
-            <button
-              disabled={!logId || sendingFb || !!sentFeedback}
-              onClick={() => sendFeedback("down")}
-              title="Não ajudou"
-              style={{
-                padding: "6px 10px",
-                borderRadius: 8,
-                border: "1px solid #ccc",
-                background:
-                  sentFeedback === "down" ? "rgba(200,0,0,.1)" : "transparent",
-              }}
-            >
-              👎 Não ajudou
-            </button>
-            {sentFeedback && (
-              <span style={{ color: "#555", alignSelf: "center" }}>
-                Obrigado pelo feedback!
-              </span>
-            )}
-          </div>
-        </section>
+        <div className="mt-6">
+          <h2 className="font-medium mb-2">Resposta</h2>
+          <div className="whitespace-pre-wrap text-sm leading-6">{answer}</div>
+        </div>
       )}
 
       {cites.length > 0 && (
-        <section>
-          <h3 style={{ fontSize: 16, marginBottom: 6 }}>
-            Citações ({cites.length})
-          </h3>
-          <ul
-            style={{ listStyle: "none", padding: 0, display: "grid", gap: 8 }}
-          >
+        <div className="mt-6">
+          <h3 className="font-medium mb-2">Citações</h3>
+          <ul className="space-y-3">
             {cites.map((c) => (
-              <li
-                key={c.chunkId}
-                style={{
-                  border: "1px solid #ddd",
-                  borderRadius: 8,
-                  padding: 10,
-                }}
-              >
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                  {c.docName} {c.page ? `(p. ${c.page})` : ""}
+              <li key={c.id} className="text-sm">
+                <div className="font-semibold">
+                  {c.name}
+                  {c.page != null ? ` (p. ${c.page})` : ""}
                 </div>
-                <div style={{ color: "#444" }}>{c.preview}</div>
+                <div className="opacity-80">{c.snippet}</div>
               </li>
             ))}
           </ul>
-        </section>
+        </div>
       )}
-    </main>
+    </div>
   );
 }

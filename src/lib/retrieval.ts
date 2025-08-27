@@ -1,4 +1,3 @@
-// src/lib/retrieval.ts
 import { Types } from "mongoose";
 import { ChunkModel } from "@/models/Chunk";
 import { DocumentModel } from "@/models/Document";
@@ -24,7 +23,7 @@ type RetrieveOpts = {
   bm25Limit?: number;
 };
 
-// ---- RERANK (Jina) opcional ----
+// Reranker Jina (opcional)
 async function jinaRerank(query: string, docs: string[], topK: number) {
   const key = process.env.JINA_API_KEY;
   if (!key) return null;
@@ -53,7 +52,6 @@ async function jinaRerank(query: string, docs: string[], topK: number) {
   };
   return json.results;
 }
-// --------------------------------
 
 export async function hybridRetrieve({
   tenantId,
@@ -62,10 +60,8 @@ export async function hybridRetrieve({
   denseLimit = 200,
   bm25Limit = 20,
 }: RetrieveOpts): Promise<RetrievedItem[]> {
-  // 1) Embedding da query
   const q = await getEmbedding(query);
 
-  // 2) Candidatos densos
   const denseCandidates = await ChunkModel.find(
     { tenantId, embedding: { $exists: true, $type: "array" } },
     { embedding: 1, text: 1, docId: 1, page: 1 }
@@ -84,9 +80,8 @@ export async function hybridRetrieve({
     }))
     .sort((a, b) => (b.denseScore ?? 0) - (a.denseScore ?? 0))
     .slice(0, 12)
-    .map((c, i) => ({ ...c, fusedScore: 1 / (60 + i) })); // RRF parcial
+    .map((c, i) => ({ ...c, fusedScore: 1 / (60 + i) }));
 
-  // 3) Candidatos BM25 (texto)
   const bm25Candidates = await ChunkModel.find(
     { tenantId, $text: { $search: query } },
     { text: 1, docId: 1, page: 1, score: { $meta: "textScore" } as any }
@@ -104,7 +99,6 @@ export async function hybridRetrieve({
     fusedScore: 1 / (60 + i),
   }));
 
-  // 4) Fusão RRF
   const map = new Map<string, RetrievedItem>();
   const add = (x: RetrievedItem) => {
     const prev = map.get(x._id);
@@ -127,7 +121,6 @@ export async function hybridRetrieve({
     (a, b) => b.fusedScore - a.fusedScore
   );
 
-  // 5) Diversificação por documento
   const seenDocs = new Set<string>();
   let diversified: RetrievedItem[] = [];
   for (const item of fused) {
@@ -147,7 +140,6 @@ export async function hybridRetrieve({
     }
   }
 
-  // 6) Reranker Jina (opcional)
   if (process.env.JINA_API_KEY && diversified.length > 2) {
     try {
       const texts = diversified.map((d) => d.text);
@@ -165,7 +157,6 @@ export async function hybridRetrieve({
     }
   }
 
-  // 7) Nome do documento para citações
   const ids = Array.from(
     new Set(diversified.map((x) => new Types.ObjectId(x.docId)))
   );

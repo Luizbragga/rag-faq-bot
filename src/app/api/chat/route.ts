@@ -1,4 +1,3 @@
-// src/app/api/chat/route.ts
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
@@ -7,7 +6,7 @@ import { hybridRetrieve, RetrievedItem } from "@/lib/retrieval";
 
 type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
 
-async function callChat(messages: ChatMsg[]): Promise<string> {
+async function callLLM(messages: ChatMsg[]): Promise<string> {
   const payload: any = {
     messages,
     temperature: 0.2,
@@ -15,11 +14,9 @@ async function callChat(messages: ChatMsg[]): Promise<string> {
   };
 
   let url = "";
-  let headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
+  let headers: Record<string, string> = { "Content-Type": "application/json" };
 
-  // 1) GROQ (recomendado)
+  // 1) Groq (recomendado)
   if (process.env.GROQ_API_KEY) {
     url = "https://api.groq.com/openai/v1/chat/completions";
     headers.Authorization = `Bearer ${process.env.GROQ_API_KEY}`;
@@ -68,20 +65,18 @@ function buildPrompt(question: string, ctx: RetrievedItem[]) {
     )
     .join("\n");
 
+  const system =
+    "Você é um assistente que responde somente com base no contexto fornecido (RAG). Não invente.";
   const user = `
 Pergunta: ${question}
 
-Contexto (trechos relevantes):
+Contexto:
 ${bullets}
 
-Instruções:
-- Responda SOMENTE com base no contexto acima.
-- Seja direto e objetivo.
-- Se não houver informação suficiente, diga claramente que não encontrou evidências.
+Regras:
+- Responda de forma direta e objetiva em português.
+- Se não houver evidências suficientes no contexto, diga claramente que não encontrou.
   `.trim();
-
-  const system =
-    "Você é um assistente que responde perguntas com base em passagens fornecidas (RAG). Não invente.";
 
   return [
     { role: "system", content: system },
@@ -108,12 +103,10 @@ export async function POST(req: Request) {
       );
     }
 
-    // RAG
     const ctx = await hybridRetrieve({ tenantId, query: question, k: 6 });
 
-    // Chamada ao LLM (Groq/OpenRouter/OpenAI)
     const messages = buildPrompt(question, ctx);
-    const answer = await callChat(messages);
+    const answer = await callLLM(messages);
 
     const citations = ctx.map((c) => ({
       id: c._id,

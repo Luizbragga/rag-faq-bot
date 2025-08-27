@@ -1,10 +1,4 @@
 // src/lib/embeddings.ts
-// Seleciona automaticamente Jina → Cohere → OpenAI.
-// Configure ao menos UMA das chaves na Vercel:
-// - JINA_API_KEY (recomendado: plano grátis generoso)
-// - COHERE_API_KEY
-// - OPENAI_API_KEY
-
 type Vec = number[];
 
 const JINA_KEY = process.env.JINA_API_KEY;
@@ -73,8 +67,6 @@ async function openaiEmbed(inputs: string[]): Promise<Vec[]> {
   return json.data.map((d) => d.embedding);
 }
 
-// ===== API pública usada no resto do projeto =====
-
 export async function getEmbedding(text: string): Promise<Vec> {
   const arr = await getEmbeddings([text]);
   return arr[0];
@@ -85,6 +77,6 @@ export async function getEmbeddings(texts: string[]): Promise<Vec[]> {
   if (COHERE_KEY) return await cohereEmbed(texts);
   if (OPENAI_KEY) return await openaiEmbed(texts);
   throw new Error(
-    "Nenhuma chave de embeddings configurada. Defina JINA_API_KEY, ou COHERE_API_KEY, ou OPENAI_API_KEY."
+    "Nenhuma chave de embeddings configurada. Defina JINA_API_KEY ou COHERE_API_KEY ou OPENAI_API_KEY."
   );
 }
