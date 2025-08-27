@@ -1,95 +1,128 @@
+// src/app/api/chat/route.ts
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { connectToDB } from "@/lib/db";
-import { hybridRetrieve } from "@/lib/retrieval";
-import { makeExtractiveAnswer, snippet } from "@/lib/extractive";
-import { QALogModel } from "@/models/QALog";
-import { Types } from "mongoose";
+import { hybridRetrieve, RetrievedItem } from "@/lib/retrieval";
+
+type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
+
+async function callChat(messages: ChatMsg[]): Promise<string> {
+  const payload: any = {
+    messages,
+    temperature: 0.2,
+    max_tokens: 700,
+  };
+
+  let url = "";
+  let headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+
+  // 1) GROQ (recomendado)
+  if (process.env.GROQ_API_KEY) {
+    url = "https://api.groq.com/openai/v1/chat/completions";
+    headers.Authorization = `Bearer ${process.env.GROQ_API_KEY}`;
+    payload.model = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
+  }
+  // 2) OpenRouter (opcional)
+  else if (process.env.OPENROUTER_API_KEY) {
+    url = "https://openrouter.ai/api/v1/chat/completions";
+    headers.Authorization = `Bearer ${process.env.OPENROUTER_API_KEY}`;
+    headers["HTTP-Referer"] = process.env.OPENROUTER_SITE || "";
+    headers["X-Title"] = "RAG FAQ Demo";
+    payload.model =
+      process.env.OPENROUTER_MODEL || "meta-llama/llama-3.1-8b-instruct:free";
+  }
+  // 3) OpenAI (fallback)
+  else {
+    url = "https://api.openai.com/v1/chat/completions";
+    headers.Authorization = `Bearer ${process.env.OPENAI_API_KEY ?? ""}`;
+    payload.model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  }
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`LLM error ${res.status}: ${text}`);
+  }
+
+  const json = (await res.json()) as any;
+  const text =
+    json.choices?.[0]?.message?.content ?? json.choices?.[0]?.text ?? "";
+  return text;
+}
+
+function buildPrompt(question: string, ctx: RetrievedItem[]) {
+  const bullets = ctx
+    .map(
+      (c, i) =>
+        `(${i + 1}) ${c.text.trim()} — fonte: ${c.docName ?? c.docId}${
+          c.page != null ? ` (p. ${c.page})` : ""
+        }`
+    )
+    .join("\n");
+
+  const user = `
+Pergunta: ${question}
+
+Contexto (trechos relevantes):
+${bullets}
+
+Instruções:
+- Responda SOMENTE com base no contexto acima.
+- Seja direto e objetivo.
+- Se não houver informação suficiente, diga claramente que não encontrou evidências.
+  `.trim();
+
+  const system =
+    "Você é um assistente que responde perguntas com base em passagens fornecidas (RAG). Não invente.";
+
+  return [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ] as ChatMsg[];
+}
 
 export async function POST(req: Request) {
   try {
     await connectToDB();
 
-    const body = await req.json().catch(() => ({}));
-    const query = (body.query || body.question || "").toString().trim();
+    const body = await req.json().catch(() => ({} as any));
+    const question = (body.question || body.q || "").toString().trim();
     const tenantId = (
       body.tenantId ||
       process.env.DEFAULT_TENANT ||
       "demo"
     ).toString();
-    const k = Number(body.k ?? 6);
 
-    if (!query) {
+    if (!question) {
       return NextResponse.json(
-        { ok: false, error: "Missing 'query' in JSON body" },
+        { ok: false, error: "Missing 'question' in body" },
         { status: 400 }
       );
     }
 
-    const t0 = Date.now();
+    // RAG
+    const ctx = await hybridRetrieve({ tenantId, query: question, k: 6 });
 
-    // 1) retrieval (semântico + BM25 + RRF)
-    const items = await hybridRetrieve({ tenantId, query, k });
+    // Chamada ao LLM (Groq/OpenRouter/OpenAI)
+    const messages = buildPrompt(question, ctx);
+    const answer = await callChat(messages);
 
-    // 2) montar resposta (extractiva) e citações
-    let answer: string;
-    let citations: Array<{
-      chunkId: string;
-      docId: string;
-      docName: string;
-      preview: string;
-      page?: number | null;
-    }>;
+    const citations = ctx.map((c) => ({
+      id: c._id,
+      name: c.docName ?? c.docId,
+      snippet: c.text,
+      page: c.page ?? undefined,
+    }));
 
-    if (!items.length) {
-      answer = "Não encontrei evidências nos documentos para responder.";
-      citations = [];
-    } else {
-      answer = makeExtractiveAnswer(
-        query,
-        items.map((i) => i.text)
-      );
-      citations = items.map((i) => ({
-        chunkId: i._id,
-        docId: i.docId,
-        docName: i.docName ?? "Documento",
-        preview: snippet(i.text),
-        page: (i as any).page ?? null,
-      }));
-    }
-
-    // 3) LOG (e capturar id)
-    let logId: string | null = null;
-    try {
-      const retrievedIds = items
-        .map((i) => {
-          try {
-            return new Types.ObjectId(i._id);
-          } catch {
-            return null;
-          }
-        })
-        .filter(Boolean) as Types.ObjectId[];
-
-      const created = await QALogModel.create({
-        tenantId,
-        question: query,
-        retrievedIds,
-        model: "extractive-local",
-        latencyMs: Date.now() - t0,
-        costUsd: 0,
-        hadCitation: citations.length > 0,
-        // feedback: null (default)
-      });
-
-      logId = String(created._id);
-    } catch {
-      // não falha a requisição se o log der erro
-    }
-
-    // 4) resposta
-    return NextResponse.json({ ok: true, answer, citations, logId });
+    return NextResponse.json({ ok: true, answer, citations });
   } catch (e: any) {
     return NextResponse.json(
       { ok: false, error: e?.message ?? String(e) },
