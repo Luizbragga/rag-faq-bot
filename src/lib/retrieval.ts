@@ -24,20 +24,19 @@ type RetrieveOpts = {
 };
 
 /**
- * Reranker Jina (opcional)
- * - Envia `documents` como array de objetos { text } (evita 422).
- * - Não envia top_n/top_k/return_documents (evita 'Extra inputs are not permitted').
- * - Normaliza a resposta (pode vir em `data` ou `results`).
+ * Reranker Jina (opcional).
+ * Mantido aqui, mas por padrão NÃO é chamado. Ligue apenas se precisar:
+ * defina JINA_RERANK=true nas variáveis de ambiente e faça redeploy.
  */
 async function jinaRerank(query: string, docs: string[], topK: number) {
   const key = process.env.JINA_API_KEY;
   if (!key) return null;
 
-  // A Jina aceita { documents: [{ text: "..." }, ...] }
+  // Versão mais simples do payload (sem campos opcionais)
   const payload = {
     model: "jina-reranker-v2-base-multilingual",
     query,
-    documents: docs.map((d) => ({ text: d })),
+    documents: docs, // array de strings
   };
 
   const res = await fetch("https://api.jina.ai/v1/rerank", {
@@ -51,12 +50,13 @@ async function jinaRerank(query: string, docs: string[], topK: number) {
 
   if (!res.ok) {
     const t = await res.text();
-    throw new Error(`Jina Rerank ${res.status}: ${t}`);
+    console.warn("Jina Rerank not ok:", res.status, t);
+    return null; // não derruba o fluxo
   }
 
   const json: any = await res.json();
 
-  // A API pode devolver em `data` ou `results`
+  // Normaliza possíveis formatos de resposta
   const rows: Array<any> = Array.isArray(json?.data)
     ? json.data
     : Array.isArray(json?.results)
@@ -65,7 +65,6 @@ async function jinaRerank(query: string, docs: string[], topK: number) {
 
   if (!rows.length) return null;
 
-  // Normaliza / ordena desc / corta em topK
   const ranked = rows
     .map((r: any, i: number) => ({
       index: typeof r.index === "number" ? r.index : i,
@@ -111,9 +110,9 @@ export async function hybridRetrieve({
     }))
     .sort((a, b) => (b.denseScore ?? 0) - (a.denseScore ?? 0))
     .slice(0, 12)
-    .map((c, i) => ({ ...c, fusedScore: 1 / (60 + i) })); // RRF parcial
+    .map((c, i) => ({ ...c, fusedScore: 1 / (60 + i) }));
 
-  // 3) candidatos BM25 (índice textual do Mongo)
+  // 3) candidatos BM25
   const bm25Candidates = await ChunkModel.find(
     { tenantId, $text: { $search: query } },
     { text: 1, docId: 1, page: 1, score: { $meta: "textScore" } as any }
@@ -128,10 +127,10 @@ export async function hybridRetrieve({
     text: c.text,
     page: typeof c.page === "number" ? c.page : null,
     bm25Score: c.score as number,
-    fusedScore: 1 / (60 + i), // RRF parcial
+    fusedScore: 1 / (60 + i),
   }));
 
-  // 4) Fusão por RRF (soma dos scores parciais)
+  // 4) Fusão por RRF básica
   const map = new Map<string, RetrievedItem>();
   const add = (x: RetrievedItem) => {
     const prev = map.get(x._id);
@@ -150,12 +149,11 @@ export async function hybridRetrieve({
   denseRanked.forEach(add);
   bm25Ranked.forEach(add);
 
-  // 5) Ordena por pontuação combinada
   let fused = Array.from(map.values()).sort(
     (a, b) => b.fusedScore - a.fusedScore
   );
 
-  // 6) Diversificação por documento
+  // 5) Diversificação por documento
   const seenDocs = new Set<string>();
   let diversified: RetrievedItem[] = [];
   for (const item of fused) {
@@ -175,8 +173,9 @@ export async function hybridRetrieve({
     }
   }
 
-  // 7) (Opcional) Rerank com Jina
-  if (process.env.JINA_API_KEY && diversified.length > 2) {
+  // 6) (OPCIONAL) Rerank Jina — DESLIGADO por padrão
+  const enableRerank = process.env.JINA_RERANK === "true";
+  if (enableRerank && process.env.JINA_API_KEY && diversified.length > 2) {
     try {
       const texts = diversified.map((d) => d.text);
       const reranked = await jinaRerank(
@@ -185,15 +184,17 @@ export async function hybridRetrieve({
         Math.min(k, texts.length)
       );
       if (reranked && reranked.length) {
-        const ordered = reranked.map((r) => diversified[r.index]);
-        diversified = ordered;
+        const ordered = reranked
+          .map((r) => diversified[r.index])
+          .filter(Boolean);
+        if (ordered.length) diversified = ordered;
       }
     } catch (e) {
-      console.warn("Jina reranker falhou, mantendo ordem RRF:", e);
+      console.warn("Reranker falhou, mantendo ordem:", e);
     }
   }
 
-  // 8) Anotar nomes dos documentos
+  // 7) Nome dos docs (para citações)
   const ids = Array.from(
     new Set(diversified.map((x) => new Types.ObjectId(x.docId)))
   );
