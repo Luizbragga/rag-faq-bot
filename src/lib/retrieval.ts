@@ -25,19 +25,19 @@ type RetrieveOpts = {
 
 /**
  * Reranker Jina (opcional)
- * - Remove o campo não suportado (top_n/top_k) para evitar 422 "Extra inputs are not permitted".
- * - Normaliza a resposta, que pode vir em `data` ou `results`.
- * - Ordena por score desc e devolve apenas os índices (topK é aplicado no cliente).
+ * - Envia `documents` como array de objetos { text } (evita 422).
+ * - Não envia top_n/top_k/return_documents (evita 'Extra inputs are not permitted').
+ * - Normaliza a resposta (pode vir em `data` ou `results`).
  */
 async function jinaRerank(query: string, docs: string[], topK: number) {
   const key = process.env.JINA_API_KEY;
   if (!key) return null;
 
+  // A Jina aceita { documents: [{ text: "..." }, ...] }
   const payload = {
     model: "jina-reranker-v2-base-multilingual",
     query,
-    documents: docs,
-    // ❌ NÃO enviar top_n/top_k. A API acusa 422 quando recebe campos extras.
+    documents: docs.map((d) => ({ text: d })),
   };
 
   const res = await fetch("https://api.jina.ai/v1/rerank", {
@@ -65,7 +65,7 @@ async function jinaRerank(query: string, docs: string[], topK: number) {
 
   if (!rows.length) return null;
 
-  // Normaliza e ordena por score desc; devolve só os índices
+  // Normaliza / ordena desc / corta em topK
   const ranked = rows
     .map((r: any, i: number) => ({
       index: typeof r.index === "number" ? r.index : i,
@@ -79,7 +79,6 @@ async function jinaRerank(query: string, docs: string[], topK: number) {
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.min(topK, docs.length));
 
-  // O chamador usa apenas `index`; manter a assinatura enxuta
   return ranked as { index: number; score: number }[] | null;
 }
 
