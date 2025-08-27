@@ -47,7 +47,7 @@ export async function hybridRetrieve({
       docId: String(c.docId),
       text: c.text,
       page: typeof c.page === "number" ? c.page : null, // ⬅️ propagar page
-      denseScore: dot(qVec, c.embedding as number[]),
+      denseScore: dot(q as number[], c.embedding as number[]),
       fusedScore: 0, // será definido pelo RRF
     }))
     .sort((a, b) => b.denseScore! - a.denseScore!)

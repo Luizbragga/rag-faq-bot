@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { connectToDB } from "@/lib/db";
 import { ChunkModel } from "@/models/Chunk";
-import { embedBatch } from "@/lib/embeddings";
+import { getEmbeddings } from "@/lib/embeddings";
 
 const BATCH_SIZE = 32; // pode aumentar depois
 
@@ -37,8 +37,8 @@ export async function POST(req: Request) {
       const slice = chunks.slice(i, i + BATCH_SIZE);
       const inputs = slice.map((c) => c.text);
 
-      // ⬇️ Embeddings LOCAIS (Transformers.js)
-      const vectors = await embedBatch(inputs);
+      // Embeddings via OpenAI (server-safe na Vercel)
+      const vectors = await getEmbeddings(inputs); // <-- aqui era texts
 
       // Atualiza cada chunk com sua embedding
       const ops = slice.map((c, idx) => ({
