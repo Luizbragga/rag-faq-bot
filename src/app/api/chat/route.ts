@@ -73,8 +73,9 @@ Context:
 ${bullets}
 
 Guidelines:
-- Answer in the SAME language as the user's question (Portuguese or English).
-- Be clear, direct and concise.
+- Answer exclusively in the SAME language as the user's question (Portuguese or English).
+- Do NOT mix languages or add inline translations; keep a single language throughout the answer.
+- Be clear, concise, and focus only on information present in the context.
 - If there isn't enough evidence in the context, say you couldn't find it.
 `.trim();
 
