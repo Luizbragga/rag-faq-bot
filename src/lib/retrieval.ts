@@ -23,21 +23,10 @@ type RetrieveOpts = {
   bm25Limit?: number;
 };
 
-/**
- * Reranker Jina (opcional).
- * Mantido aqui, mas por padrão NÃO é chamado. Ligue apenas se precisar:
- * defina JINA_RERANK=true nas variáveis de ambiente e faça redeploy.
- */
+/** --- Reranker Jina (opcional; ativa se JINA_API_KEY existir) --- */
 async function jinaRerank(query: string, docs: string[], topK: number) {
   const key = process.env.JINA_API_KEY;
   if (!key) return null;
-
-  // Versão mais simples do payload (sem campos opcionais)
-  const payload = {
-    model: "jina-reranker-v2-base-multilingual",
-    query,
-    documents: docs, // array de strings
-  };
 
   const res = await fetch("https://api.jina.ai/v1/rerank", {
     method: "POST",
@@ -45,40 +34,23 @@ async function jinaRerank(query: string, docs: string[], topK: number) {
       "Content-Type": "application/json",
       Authorization: `Bearer ${key}`,
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      model: "jina-reranker-v2-base-multilingual",
+      query,
+      documents: docs,
+      top_n: Math.min(topK, docs.length),
+    }),
   });
 
   if (!res.ok) {
     const t = await res.text();
-    console.warn("Jina Rerank not ok:", res.status, t);
-    return null; // não derruba o fluxo
+    console.warn("Jina reranker error", res.status, t);
+    return null;
   }
-
-  const json: any = await res.json();
-
-  // Normaliza possíveis formatos de resposta
-  const rows: Array<any> = Array.isArray(json?.data)
-    ? json.data
-    : Array.isArray(json?.results)
-    ? json.results
-    : [];
-
-  if (!rows.length) return null;
-
-  const ranked = rows
-    .map((r: any, i: number) => ({
-      index: typeof r.index === "number" ? r.index : i,
-      score:
-        typeof r.relevance_score === "number"
-          ? r.relevance_score
-          : typeof r.score === "number"
-          ? r.score
-          : 0,
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, Math.min(topK, docs.length));
-
-  return ranked as { index: number; score: number }[] | null;
+  const json = (await res.json()) as {
+    results: { index: number; relevance_score: number }[];
+  };
+  return json.results;
 }
 
 export async function hybridRetrieve({
@@ -110,9 +82,9 @@ export async function hybridRetrieve({
     }))
     .sort((a, b) => (b.denseScore ?? 0) - (a.denseScore ?? 0))
     .slice(0, 12)
-    .map((c, i) => ({ ...c, fusedScore: 1 / (60 + i) }));
+    .map((c, i) => ({ ...c, fusedScore: 1 / (60 + i) })); // RRF parcial
 
-  // 3) candidatos BM25
+  // 3) BM25
   const bm25Candidates = await ChunkModel.find(
     { tenantId, $text: { $search: query } },
     { text: 1, docId: 1, page: 1, score: { $meta: "textScore" } as any }
@@ -127,10 +99,10 @@ export async function hybridRetrieve({
     text: c.text,
     page: typeof c.page === "number" ? c.page : null,
     bm25Score: c.score as number,
-    fusedScore: 1 / (60 + i),
+    fusedScore: 1 / (60 + i), // RRF parcial
   }));
 
-  // 4) Fusão por RRF básica
+  // 4) Fusão RRF
   const map = new Map<string, RetrievedItem>();
   const add = (x: RetrievedItem) => {
     const prev = map.get(x._id);
@@ -158,11 +130,11 @@ export async function hybridRetrieve({
   let diversified: RetrievedItem[] = [];
   for (const item of fused) {
     const keyDoc = item.docId;
-    if (!seenDocs.has(keyDoc) || diversified.length < k / 2) {
+    if (!seenDocs.has(keyDoc) || diversified.length < Math.floor(k / 2)) {
       diversified.push(item);
       seenDocs.add(keyDoc);
     }
-    if (diversified.length >= k) break;
+    if (diversified.length >= Math.max(k, 1)) break;
   }
   if (diversified.length < k) {
     for (const item of fused) {
@@ -173,9 +145,8 @@ export async function hybridRetrieve({
     }
   }
 
-  // 6) (OPCIONAL) Rerank Jina — DESLIGADO por padrão
-  const enableRerank = process.env.JINA_RERANK === "true";
-  if (enableRerank && process.env.JINA_API_KEY && diversified.length > 2) {
+  // 6) Rerank da Jina (se houver chave) — reduz redundância
+  if (process.env.JINA_API_KEY && diversified.length > 2) {
     try {
       const texts = diversified.map((d) => d.text);
       const reranked = await jinaRerank(
@@ -184,17 +155,18 @@ export async function hybridRetrieve({
         Math.min(k, texts.length)
       );
       if (reranked && reranked.length) {
+        // reordena de acordo com os índices retornados
         const ordered = reranked
           .map((r) => diversified[r.index])
           .filter(Boolean);
-        if (ordered.length) diversified = ordered;
+        diversified = ordered;
       }
     } catch (e) {
       console.warn("Reranker falhou, mantendo ordem:", e);
     }
   }
 
-  // 7) Nome dos docs (para citações)
+  // 7) Anotar nomes de documentos
   const ids = Array.from(
     new Set(diversified.map((x) => new Types.ObjectId(x.docId)))
   );
