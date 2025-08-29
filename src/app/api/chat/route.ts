@@ -5,16 +5,13 @@ import { NextResponse } from "next/server";
 import { connectToDB } from "@/lib/db";
 import { hybridRetrieve, RetrievedItem } from "@/lib/retrieval";
 
-// Mensagens no formato OpenAI/Groq
 type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
 
-// --------- LLM (GROQ only) ----------
 async function callGroq(messages: ChatMsg[]) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "GROQ_API_KEY não encontrado nas variáveis de ambiente do projeto. " +
-        "Defina GROQ_API_KEY e faça redeploy."
+      "GROQ_API_KEY não configurado. Defina a variável na Vercel e faça redeploy."
     );
   }
 
@@ -38,7 +35,7 @@ async function callGroq(messages: ChatMsg[]) {
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`groq error ${res.status}: ${text}`);
+    throw new Error(`Groq error ${res.status}: ${text}`);
   }
 
   const json = (await res.json()) as any;
@@ -48,7 +45,6 @@ async function callGroq(messages: ChatMsg[]) {
   return { text, provider: "groq" as const, model };
 }
 
-// --------- Prompt com contexto RAG ----------
 function buildPrompt(question: string, ctx: RetrievedItem[]) {
   const bullets = ctx
     .map(
@@ -60,16 +56,19 @@ function buildPrompt(question: string, ctx: RetrievedItem[]) {
     .join("\n");
 
   const system =
-    "Você é um assistente que responde SOMENTE com base no contexto fornecido (RAG). Não invente.";
+    "Você é um assistente RAG. Responda SOMENTE com base no contexto abaixo. " +
+    "Se faltar evidência, diga que não encontrou. Seja sucinto.";
+
   const user = `
 Pergunta: ${question}
 
 Contexto:
 ${bullets}
 
-Regras:
-- Responda de forma direta e objetiva em português.
-- Se não houver evidências suficientes no contexto, diga claramente que não encontrou.
+Regras de estilo:
+- Responda em no máximo 3 bullets curtos e diretos.
+- Se houver número de página, cite-o no final de cada bullet.
+- Não invente nada fora do contexto.
 `.trim();
 
   return [
@@ -78,7 +77,6 @@ Regras:
   ] as ChatMsg[];
 }
 
-// --------- HTTP Handler ----------
 export async function POST(req: Request) {
   try {
     await connectToDB();
@@ -98,14 +96,11 @@ export async function POST(req: Request) {
       );
     }
 
-    // Recupera contexto dos seus chunks (RAG)
     const ctx = await hybridRetrieve({ tenantId, query: question, k: 6 });
 
-    // Monta prompt e chama o Groq
     const messages = buildPrompt(question, ctx);
     const { text: answer, provider, model } = await callGroq(messages);
 
-    // Citações para exibir na UI
     const citations = ctx.map((c) => ({
       id: c._id,
       name: c.docName ?? c.docId,
