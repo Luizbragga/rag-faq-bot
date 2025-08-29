@@ -19,7 +19,6 @@ export default function UploadTextPage() {
 
     setBusy(true);
     setLog([]);
-
     try {
       // 1) Ingestão do texto
       push("Enviando texto…");
@@ -124,7 +123,6 @@ export default function UploadTextPage() {
           >
             {busy ? "Processando…" : "Enviar e Indexar"}
           </button>
-
           <a
             href="/chat"
             style={{

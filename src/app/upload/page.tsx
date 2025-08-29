@@ -32,10 +32,8 @@ export default function UploadPDFPage() {
 
       push(`OK: documento ${j1.docId} com ${j1.chunks} chunk(s).`);
 
-      // 2) Backfill de embeddings (local, sem custo)
-      push(
-        "Gerando embeddings… (a primeira vez pode demorar por causa do download do modelo)"
-      );
+      // 2) Backfill de embeddings
+      push("Gerando embeddings… (primeira vez pode demorar)");
       const r2 = await fetch(
         `/api/embeddings/backfill?tenantId=${encodeURIComponent(
           tenantId
@@ -105,19 +103,6 @@ export default function UploadPDFPage() {
           </button>
 
           <a
-            href="/chat"
-            style={{
-              padding: "10px 16px",
-              borderRadius: 8,
-              border: "1px solid #ccc",
-              textDecoration: "none",
-            }}
-          >
-            Ir para o chat →
-          </a>
-
-          {/* atalho para a página de texto */}
-          <a
             href="/upload/text"
             style={{
               padding: "10px 16px",
@@ -127,6 +112,18 @@ export default function UploadPDFPage() {
             }}
           >
             Inserir texto →
+          </a>
+
+          <a
+            href="/chat"
+            style={{
+              padding: "10px 16px",
+              borderRadius: 8,
+              border: "1px solid #ccc",
+              textDecoration: "none",
+            }}
+          >
+            Ir para o chat →
           </a>
         </div>
       </form>
