@@ -86,8 +86,11 @@ function buildPrompt(question: string, ctx: RetrievedItem[]) {
 
   const system = `
 You are a Retrieval-Augmented assistant. Answer ONLY using the provided context. Do NOT invent.
-Language: ${langLabel}. Reply your entire answer in ${langLabel} (no mixed languages, no inline translations).
-If the context is insufficient, say you couldn't find enough evidence instead of guessing.
+Language: ${langLabel}. Reply fully in ${langLabel}.
+Style:
+- Answer directly; no fillers like “Based on the provided context”, apologies, or hedging.
+- If the question and context are not a perfect match but there is relevant info, answer with what *is* in the context and clarify the scope (e.g., “Human support hours are …”).
+- Only say you couldn't find enough evidence if there is truly nothing relevant in the context.
 `.trim();
 
   const user = `
@@ -98,9 +101,9 @@ Context:
 ${bullets}
 
 Rules:
-- Be concise and clear.
-- Use only information present in the context.
-- If there isn't enough evidence in the context, state that clearly.
+- Be concise and clear; use bullet points only if they help.
+- Use *only* the context above.
+- If there isn't enough evidence at all, state it clearly; otherwise, answer directly without meta commentary.
 `.trim();
 
   return [
