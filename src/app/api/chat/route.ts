@@ -46,6 +46,7 @@ async function callLLM(messages: ChatMsg[]): Promise<string> {
 }
 
 /** --------- Prompt com deduplicação por documento ---------- */
+/** --------- Prompt com deduplicação por documento ---------- */
 function buildPrompt(question: string, ctx: RetrievedItem[]) {
   // Dedup por documento: mantém o primeiro trecho de cada doc
   const uniqueByDoc = new Map<string, RetrievedItem>();
@@ -63,16 +64,18 @@ function buildPrompt(question: string, ctx: RetrievedItem[]) {
     .join("\n");
 
   const system =
-    "Você é um assistente que responde SOMENTE com base no contexto fornecido (RAG). Não invente.";
-  const user = `
-Pergunta: ${question}
+    "You are a helpful assistant that must ONLY use the provided context (RAG). Do not invent or use external knowledge.";
 
-Contexto:
+  const user = `
+Question: ${question}
+
+Context:
 ${bullets}
 
-Regras:
-- Responda de forma direta e objetiva em português.
-- Se não houver evidências suficientes no contexto, diga claramente que não encontrou.
+Guidelines:
+- Answer in the SAME language as the user's question (Portuguese or English).
+- Be clear, direct and concise.
+- If there isn't enough evidence in the context, say you couldn't find it.
 `.trim();
 
   return [
