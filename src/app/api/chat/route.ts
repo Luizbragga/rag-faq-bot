@@ -48,24 +48,17 @@ async function callLLM(messages: ChatMsg[]): Promise<string> {
 /** --------- Prompt com deduplicação por documento ---------- */
 /** --------- Prompt com deduplicação por documento ---------- */
 function buildPrompt(question: string, ctx: RetrievedItem[]) {
-  // Dedup por documento: mantém o primeiro trecho de cada doc
-  const uniqueByDoc = new Map<string, RetrievedItem>();
-  for (const c of ctx) {
-    if (!uniqueByDoc.has(c.docId)) uniqueByDoc.set(c.docId, c);
-  }
-  const list = Array.from(uniqueByDoc.values());
-
-  const bullets = list
-    .map((c, i) => {
-      const fonte = c.docName ?? c.docId;
-      const page = c.page != null ? ` (p. ${c.page})` : "";
-      return `(${i + 1}) ${c.text.trim()} — fonte: ${fonte}${page}`;
-    })
+  const bullets = ctx
+    .map(
+      (c, i) =>
+        `(${i + 1}) ${c.text.trim()} — fonte: ${c.docName ?? c.docId}${
+          c.page != null ? ` (p. ${c.page})` : ""
+        }`
+    )
     .join("\n");
 
   const system =
-    "You are a helpful assistant that must ONLY use the provided context (RAG). Do not invent or use external knowledge.";
-
+    "Você é um assistente que responde SOMENTE com base no contexto fornecido (RAG). Não invente.";
   const user = `
 Question: ${question}
 
