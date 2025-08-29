@@ -47,29 +47,60 @@ async function callLLM(messages: ChatMsg[]): Promise<string> {
 
 /** --------- Prompt com deduplicação por documento ---------- */
 /** --------- Prompt com deduplicação por documento ---------- */
+// --- add this helper near buildPrompt ---
+function guessLang(s: string): "en" | "pt" {
+  const t = (s || "").toLowerCase();
+
+  // sinais fortes de PT (acentos)
+  if (/[áàâãéêíóôõúüç]/.test(t)) return "pt";
+
+  // palavras-chave em EN/PT
+  if (/\b(what|when|how|where|who|which|support|schedule|hours)\b/.test(t))
+    return "en";
+  if (
+    /\b(que|quando|como|onde|quem|qual|quais|horario|horário|suporte)\b/.test(t)
+  )
+    return "pt";
+
+  // fallback baseado em palavras funcionais comuns
+  if (/\b(the|is|are|do|does|did|can|should|could|would)\b/.test(t))
+    return "en";
+
+  // último recurso: PT
+  return "pt";
+}
+
 function buildPrompt(question: string, ctx: RetrievedItem[]) {
+  const lang = guessLang(question); // "en" | "pt"
+
   const bullets = ctx
     .map(
       (c, i) =>
-        `(${i + 1}) ${c.text.trim()} — fonte: ${c.docName ?? c.docId}${
+        `(${i + 1}) ${c.text.trim()} — source: ${c.docName ?? c.docId}${
           c.page != null ? ` (p. ${c.page})` : ""
         }`
     )
     .join("\n");
 
-  const system =
-    "Você é um assistente que responde SOMENTE com base no contexto fornecido (RAG). Não invente.";
+  const langLabel = lang === "en" ? "English" : "Portuguese (pt-BR)";
+
+  const system = `
+You are a Retrieval-Augmented assistant. Answer ONLY using the provided context. Do NOT invent.
+Language: ${langLabel}. Reply your entire answer in ${langLabel} (no mixed languages, no inline translations).
+If the context is insufficient, say you couldn't find enough evidence instead of guessing.
+`.trim();
+
   const user = `
-Question: ${question}
+Question:
+${question}
 
 Context:
 ${bullets}
 
-Guidelines:
-- Answer exclusively in the SAME language as the user's question (Portuguese or English).
-- Do NOT mix languages or add inline translations; keep a single language throughout the answer.
-- Be clear, concise, and focus only on information present in the context.
-- If there isn't enough evidence in the context, say you couldn't find it.
+Rules:
+- Be concise and clear.
+- Use only information present in the context.
+- If there isn't enough evidence in the context, state that clearly.
 `.trim();
 
   return [
