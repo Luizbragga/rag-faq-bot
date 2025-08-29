@@ -1,8 +1,8 @@
-"use client";
+// src/app/upload/page.tsx
+"use client"; // ← tem que vir primeiro
+export const dynamic = "force-dynamic";
 
 import { useState } from "react";
-
-export const dynamic = "force-dynamic"; // garante que não fica estático
 
 type Mode = "pdf" | "text";
 
