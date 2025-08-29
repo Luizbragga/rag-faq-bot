@@ -1,33 +1,16 @@
-// src/app/upload-text/page.tsx
-export const dynamic = "force-dynamic";
-
-("use client");
+"use client";
 
 import { useState } from "react";
 
 export default function UploadTextPage() {
   const [tenantId, setTenantId] = useState("demo");
-  const [docName, setDocName] = useState("seed-manual");
+  const [name, setName] = useState("seed-manual");
   const [text, setText] = useState("");
-
-  const [log, setLog] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [log, setLog] = useState<string[]>([]);
 
   function push(msg: string) {
     setLog((l) => [...l, msg]);
-  }
-
-  async function backfill() {
-    push("Gerando embeddings…");
-    const r = await fetch(
-      `/api/embeddings/backfill?tenantId=${encodeURIComponent(
-        tenantId
-      )}&limit=2048`,
-      { method: "POST" }
-    );
-    const j = await r.json();
-    if (!j.ok) throw new Error(j.error || "Falha no backfill");
-    push(`OK: ${j.processed} chunk(s) vetorizado(s).`);
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -36,23 +19,33 @@ export default function UploadTextPage() {
 
     setBusy(true);
     setLog([]);
+
     try {
+      // 1) Ingestão do texto
       push("Enviando texto…");
       const r1 = await fetch("/api/ingest/text", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tenantId,
-          name: docName || `seed-${new Date().toISOString().slice(0, 19)}`,
-          text,
-        }),
+        body: JSON.stringify({ tenantId, name, text }),
       });
       const j1 = await r1.json();
-      if (!j1.ok) throw new Error(j1.error || "Falha na ingestão do texto");
+      if (!j1.ok) throw new Error(j1.error || "Falha na ingestão");
+
       push(`OK: documento ${j1.docId} com ${j1.chunks} chunk(s).`);
 
-      await backfill();
-      push("Pronto! Abra a página /chat e faça perguntas.");
+      // 2) Backfill de embeddings
+      push("Gerando embeddings…");
+      const r2 = await fetch(
+        `/api/embeddings/backfill?tenantId=${encodeURIComponent(
+          tenantId
+        )}&limit=1024`,
+        { method: "POST" }
+      );
+      const j2 = await r2.json();
+      if (!j2.ok) throw new Error(j2.error || "Falha no backfill");
+
+      push(`OK: ${j2.processed} chunk(s) vetorizado(s).`);
+      push("Pronto! Abra a página /chat e faça perguntas 👇");
     } catch (err: any) {
       push("Erro: " + (err?.message || String(err)));
     } finally {
@@ -63,7 +56,7 @@ export default function UploadTextPage() {
   return (
     <main
       style={{
-        maxWidth: 840,
+        maxWidth: 820,
         margin: "40px auto",
         padding: 16,
         fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
@@ -81,22 +74,21 @@ export default function UploadTextPage() {
               padding: "10px 12px",
               borderRadius: 8,
               border: "1px solid #ccc",
-              maxWidth: 260,
+              maxWidth: 240,
             }}
           />
         </label>
 
         <label style={{ display: "grid", gap: 6 }}>
-          <span>Nome do documento (opcional)</span>
+          <span>Nome do Documento</span>
           <input
-            value={docName}
-            onChange={(e) => setDocName(e.target.value)}
-            placeholder="Ex.: faq_loja"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
             style={{
               padding: "10px 12px",
               borderRadius: 8,
               border: "1px solid #ccc",
-              maxWidth: 360,
+              maxWidth: 300,
             }}
           />
         </label>
@@ -106,13 +98,13 @@ export default function UploadTextPage() {
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
-            rows={12}
+            rows={14}
             placeholder="Cole aqui o conteúdo que deseja indexar…"
             style={{
-              width: "100%",
               padding: 12,
               borderRadius: 8,
               border: "1px solid #ccc",
+              width: "100%",
               fontFamily: "inherit",
             }}
           />
@@ -121,7 +113,7 @@ export default function UploadTextPage() {
         <div style={{ display: "flex", gap: 8 }}>
           <button
             type="submit"
-            disabled={!text.trim() || busy}
+            disabled={busy || !text.trim()}
             style={{
               padding: "10px 16px",
               borderRadius: 8,
@@ -132,6 +124,7 @@ export default function UploadTextPage() {
           >
             {busy ? "Processando…" : "Enviar e Indexar"}
           </button>
+
           <a
             href="/chat"
             style={{
