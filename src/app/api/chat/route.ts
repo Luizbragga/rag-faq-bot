@@ -1,22 +1,22 @@
-// src/app/api/chat/route.ts
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { connectToDB } from "@/lib/db";
 import { hybridRetrieve, RetrievedItem } from "@/lib/retrieval";
 
+// Mensagens no formato OpenAI/Groq
 type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
 
-async function callGroq(messages: ChatMsg[]) {
+/** ---------------- LLM: Groq (recomendado) ---------------- */
+async function callLLM(messages: ChatMsg[]): Promise<string> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "GROQ_API_KEY não configurado. Defina a variável na Vercel e faça redeploy."
+      "GROQ_API_KEY não encontrado nas variáveis de ambiente do projeto. Defina GROQ_API_KEY e faça redeploy."
     );
   }
 
   const model = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
-
   const payload = {
     model,
     messages,
@@ -35,40 +35,44 @@ async function callGroq(messages: ChatMsg[]) {
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Groq error ${res.status}: ${text}`);
+    throw new Error(`groq error ${res.status}: ${text}`);
   }
 
   const json = (await res.json()) as any;
   const text =
     json.choices?.[0]?.message?.content ?? json.choices?.[0]?.text ?? "";
 
-  return { text, provider: "groq" as const, model };
+  return text;
 }
 
+/** --------- Prompt com deduplicação por documento ---------- */
 function buildPrompt(question: string, ctx: RetrievedItem[]) {
-  const bullets = ctx
-    .map(
-      (c, i) =>
-        `(${i + 1}) ${c.text.trim()} — fonte: ${c.docName ?? c.docId}${
-          c.page != null ? ` (p. ${c.page})` : ""
-        }`
-    )
+  // Dedup por documento: mantém o primeiro trecho de cada doc
+  const uniqueByDoc = new Map<string, RetrievedItem>();
+  for (const c of ctx) {
+    if (!uniqueByDoc.has(c.docId)) uniqueByDoc.set(c.docId, c);
+  }
+  const list = Array.from(uniqueByDoc.values());
+
+  const bullets = list
+    .map((c, i) => {
+      const fonte = c.docName ?? c.docId;
+      const page = c.page != null ? ` (p. ${c.page})` : "";
+      return `(${i + 1}) ${c.text.trim()} — fonte: ${fonte}${page}`;
+    })
     .join("\n");
 
   const system =
-    "Você é um assistente RAG. Responda SOMENTE com base no contexto abaixo. " +
-    "Se faltar evidência, diga que não encontrou. Seja sucinto.";
-
+    "Você é um assistente que responde SOMENTE com base no contexto fornecido (RAG). Não invente.";
   const user = `
 Pergunta: ${question}
 
 Contexto:
 ${bullets}
 
-Regras de estilo:
-- Responda em no máximo 3 bullets curtos e diretos.
-- Se houver número de página, cite-o no final de cada bullet.
-- Não invente nada fora do contexto.
+Regras:
+- Responda de forma direta e objetiva em português.
+- Se não houver evidências suficientes no contexto, diga claramente que não encontrou.
 `.trim();
 
   return [
@@ -77,6 +81,7 @@ Regras de estilo:
   ] as ChatMsg[];
 }
 
+/** ------------------------ Handler ------------------------ */
 export async function POST(req: Request) {
   try {
     await connectToDB();
@@ -96,19 +101,26 @@ export async function POST(req: Request) {
       );
     }
 
+    // Recupera contexto (já diversificado e limitado por doc no retrieval)
     const ctx = await hybridRetrieve({ tenantId, query: question, k: 6 });
 
+    // Monta prompt deduplicado por doc e chama Groq
     const messages = buildPrompt(question, ctx);
-    const { text: answer, provider, model } = await callGroq(messages);
+    const answer = await callLLM(messages);
 
-    const citations = ctx.map((c) => ({
+    // Citações: também deduplicadas por documento
+    const uniqueByDoc = new Map<string, RetrievedItem>();
+    for (const c of ctx) {
+      if (!uniqueByDoc.has(c.docId)) uniqueByDoc.set(c.docId, c);
+    }
+    const citations = Array.from(uniqueByDoc.values()).map((c) => ({
       id: c._id,
       name: c.docName ?? c.docId,
       snippet: c.text,
       page: c.page ?? undefined,
     }));
 
-    return NextResponse.json({ ok: true, answer, citations, provider, model });
+    return NextResponse.json({ ok: true, answer, citations });
   } catch (e: any) {
     return NextResponse.json(
       { ok: false, error: e?.message ?? String(e) },

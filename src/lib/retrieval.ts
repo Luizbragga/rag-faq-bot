@@ -23,36 +23,6 @@ type RetrieveOpts = {
   bm25Limit?: number;
 };
 
-/** --- Reranker Jina (opcional; ativa se JINA_API_KEY existir) --- */
-async function jinaRerank(query: string, docs: string[], topK: number) {
-  const key = process.env.JINA_API_KEY;
-  if (!key) return null;
-
-  const res = await fetch("https://api.jina.ai/v1/rerank", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${key}`,
-    },
-    body: JSON.stringify({
-      model: "jina-reranker-v2-base-multilingual",
-      query,
-      documents: docs,
-      top_n: Math.min(topK, docs.length),
-    }),
-  });
-
-  if (!res.ok) {
-    const t = await res.text();
-    console.warn("Jina reranker error", res.status, t);
-    return null;
-  }
-  const json = (await res.json()) as {
-    results: { index: number; relevance_score: number }[];
-  };
-  return json.results;
-}
-
 export async function hybridRetrieve({
   tenantId,
   query,
@@ -60,10 +30,10 @@ export async function hybridRetrieve({
   denseLimit = 200,
   bm25Limit = 20,
 }: RetrieveOpts): Promise<RetrievedItem[]> {
-  // 1) embedding da query
+  // 1) Embedding da consulta
   const q = await getEmbedding(query);
 
-  // 2) candidatos densos
+  // 2) DENSE: candidatos com embedding
   const denseCandidates = await ChunkModel.find(
     { tenantId, embedding: { $exists: true, $type: "array" } },
     { embedding: 1, text: 1, docId: 1, page: 1 }
@@ -71,7 +41,7 @@ export async function hybridRetrieve({
     .limit(denseLimit)
     .lean();
 
-  const denseRanked = denseCandidates
+  const denseRanked: RetrievedItem[] = denseCandidates
     .map((c: any) => ({
       _id: String(c._id),
       docId: String(c.docId),
@@ -82,9 +52,9 @@ export async function hybridRetrieve({
     }))
     .sort((a, b) => (b.denseScore ?? 0) - (a.denseScore ?? 0))
     .slice(0, 12)
-    .map((c, i) => ({ ...c, fusedScore: 1 / (60 + i) })); // RRF parcial
+    .map((c, i) => ({ ...c, fusedScore: 1 / (60 + i) }));
 
-  // 3) BM25
+  // 3) BM25: texto livre ($text)
   const bm25Candidates = await ChunkModel.find(
     { tenantId, $text: { $search: query } },
     { text: 1, docId: 1, page: 1, score: { $meta: "textScore" } as any }
@@ -93,16 +63,18 @@ export async function hybridRetrieve({
     .limit(bm25Limit)
     .lean();
 
-  const bm25Ranked = bm25Candidates.map((c: any, i: number) => ({
-    _id: String(c._id),
-    docId: String(c.docId),
-    text: c.text,
-    page: typeof c.page === "number" ? c.page : null,
-    bm25Score: c.score as number,
-    fusedScore: 1 / (60 + i), // RRF parcial
-  }));
+  const bm25Ranked: RetrievedItem[] = bm25Candidates.map(
+    (c: any, i: number) => ({
+      _id: String(c._id),
+      docId: String(c.docId),
+      text: c.text,
+      page: typeof c.page === "number" ? c.page : null,
+      bm25Score: c.score as number,
+      fusedScore: 1 / (60 + i),
+    })
+  );
 
-  // 4) Fusão RRF
+  // 4) Fusão simples (soma dos scores; preserva melhor de cada trilha)
   const map = new Map<string, RetrievedItem>();
   const add = (x: RetrievedItem) => {
     const prev = map.get(x._id);
@@ -125,12 +97,13 @@ export async function hybridRetrieve({
     (a, b) => b.fusedScore - a.fusedScore
   );
 
-  // 5) Diversificação por documento
+  // 5) Diversificação por documento (garante docs variados; metade do k)
   const seenDocs = new Set<string>();
   let diversified: RetrievedItem[] = [];
+  const half = Math.max(1, Math.floor(k / 2));
   for (const item of fused) {
     const keyDoc = item.docId;
-    if (!seenDocs.has(keyDoc) || diversified.length < Math.floor(k / 2)) {
+    if (!seenDocs.has(keyDoc) || diversified.length < half) {
       diversified.push(item);
       seenDocs.add(keyDoc);
     }
@@ -145,28 +118,24 @@ export async function hybridRetrieve({
     }
   }
 
-  // 6) Rerank da Jina (se houver chave) — reduz redundância
-  if (process.env.JINA_API_KEY && diversified.length > 2) {
-    try {
-      const texts = diversified.map((d) => d.text);
-      const reranked = await jinaRerank(
-        query,
-        texts,
-        Math.min(k, texts.length)
-      );
-      if (reranked && reranked.length) {
-        // reordena de acordo com os índices retornados
-        const ordered = reranked
-          .map((r) => diversified[r.index])
-          .filter(Boolean);
-        diversified = ordered;
-      }
-    } catch (e) {
-      console.warn("Reranker falhou, mantendo ordem:", e);
-    }
-  }
+  // 6) Limite rígido de N chunks por documento (default 1; configurável)
+  const MAX_PER_DOC_ENV = process.env.RAG_MAX_CHUNKS_PER_DOC ?? "1";
+  let MAX_PER_DOC = parseInt(MAX_PER_DOC_ENV, 10);
+  if (!Number.isFinite(MAX_PER_DOC) || MAX_PER_DOC < 1) MAX_PER_DOC = 1;
 
-  // 7) Anotar nomes de documentos
+  const counts = new Map<string, number>();
+  const capped: RetrievedItem[] = [];
+  for (const it of diversified) {
+    const c = counts.get(it.docId) ?? 0;
+    if (c < MAX_PER_DOC) {
+      capped.push(it);
+      counts.set(it.docId, c + 1);
+    }
+    if (capped.length >= k) break;
+  }
+  diversified = capped;
+
+  // 7) Enriquecer com o nome do documento
   const ids = Array.from(
     new Set(diversified.map((x) => new Types.ObjectId(x.docId)))
   );
