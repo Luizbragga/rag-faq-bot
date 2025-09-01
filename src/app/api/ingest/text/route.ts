@@ -7,29 +7,99 @@ import { ChunkModel } from "@/models/Chunk";
 import { chunkTextByParagraphs } from "@/lib/chunking";
 import { isDemo, maxDocs } from "@/lib/demo";
 
-type Body = {
-  tenantId?: string;
-  text?: string;
-  name?: string;
-};
+type Section = { text: string };
+type IngestDoc = { name?: string; sections?: Section[] };
+type Body =
+  | {
+      tenantId?: string;
+      text?: string;
+      name?: string;
+    }
+  | {
+      tenantId?: string;
+      docs?: IngestDoc[];
+    };
 
-/** -------------------------------------------
+/** ------------------------------------------------------------------
  * POST /api/ingest/text
- * Cria um documento de texto (seed) e gera chunks.
- * ------------------------------------------*/
+ * Aceita:
+ *   (A) { tenantId, name, text }
+ *   (B) { tenantId, docs: [{ name, sections: [{text}, ...] }] }
+ * ------------------------------------------------------------------*/
 export async function POST(req: Request) {
   try {
     await connectToDB();
 
     const body = (await req.json().catch(() => ({}))) as Body;
     const tenantId = (
-      body.tenantId ||
+      (body as any).tenantId ||
       process.env.DEFAULT_TENANT ||
       "demo"
     ).toString();
-    const text = (body.text || "").toString().trim();
+
+    // Modo (B): vários docs com sections
+    const docs = (body as any).docs as IngestDoc[] | undefined;
+    if (Array.isArray(docs) && docs.length) {
+      if (isDemo()) {
+        const total = await DocumentModel.countDocuments({ tenantId });
+        if (total + docs.length > maxDocs()) {
+          return NextResponse.json(
+            {
+              ok: false,
+              error: `Limite de ${maxDocs()} documentos na demo (existem ${total}, tentaria criar ${
+                docs.length
+              }).`,
+            },
+            { status: 403 }
+          );
+        }
+      }
+
+      let totalChunks = 0;
+      const createdDocIds: string[] = [];
+
+      for (const d of docs) {
+        const name = d.name || `seed-${new Date().toISOString().slice(0, 19)}`;
+
+        const doc = await DocumentModel.create({
+          tenantId,
+          name,
+          type: "url",
+          status: "ready",
+          pageCount: null,
+        });
+        createdDocIds.push(String(doc._id));
+
+        const sections = (d.sections || [])
+          .map((s) => (s?.text || "").trim())
+          .filter(Boolean);
+
+        if (sections.length) {
+          await ChunkModel.insertMany(
+            sections.map((t) => ({
+              tenantId,
+              docId: doc._id,
+              source: "url" as const,
+              text: t,
+              page: null,
+            }))
+          );
+          totalChunks += sections.length;
+        }
+      }
+
+      return NextResponse.json({
+        ok: true,
+        docIds: createdDocIds,
+        chunks: totalChunks,
+        mode: "docs",
+      });
+    }
+
+    // Modo (A): texto único
+    const text = ((body as any).text || "").toString().trim();
     const name = (
-      body.name || `seed-${new Date().toISOString().slice(0, 19)}`
+      (body as any).name || `seed-${new Date().toISOString().slice(0, 19)}`
     ).toString();
 
     if (!text) {
@@ -39,7 +109,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // Limite da DEMO
     if (isDemo()) {
       const total = await DocumentModel.countDocuments({ tenantId });
       if (total >= maxDocs()) {
@@ -50,7 +119,6 @@ export async function POST(req: Request) {
       }
     }
 
-    // Cria o Document compatível com seu enum/type
     const doc = await DocumentModel.create({
       tenantId,
       name,
@@ -59,7 +127,6 @@ export async function POST(req: Request) {
       pageCount: null,
     });
 
-    // Chunking
     const pieces = chunkTextByParagraphs(text, 1800, 200);
 
     if (pieces.length) {
@@ -78,6 +145,7 @@ export async function POST(req: Request) {
       ok: true,
       docId: String(doc._id),
       chunks: pieces.length,
+      mode: "text",
     });
   } catch (e: any) {
     return NextResponse.json(
@@ -87,10 +155,10 @@ export async function POST(req: Request) {
   }
 }
 
-/** -------------------------------------------
+/** ------------------------------------------------------------------
  * GET /api/ingest/text?tenantId=demo[&name=seed-manual]
- * Lista documentos (e quantos chunks cada um tem).
- * ------------------------------------------*/
+ * Lista documentos (e total de chunks de cada um).
+ * ------------------------------------------------------------------*/
 export async function GET(req: Request) {
   try {
     await connectToDB();
@@ -140,14 +208,12 @@ export async function GET(req: Request) {
   }
 }
 
-/** -------------------------------------------
+/** ------------------------------------------------------------------
  * DELETE /api/ingest/text?tenantId=demo&docId=XYZ
  * DELETE /api/ingest/text?tenantId=demo&name=seed-manual[&keepLatest=true]
- *
- * - Com docId: remove apenas esse documento.
- * - Com name: remove todos com esse nome.
- *   Se passarmos keepLatest=true, mantém o MAIS RECENTE e apaga os demais.
- * ------------------------------------------*/
+ * - docId: apaga um documento específico
+ * - name: apaga todos com esse nome; se keepLatest=true, mantém o mais recente
+ * ------------------------------------------------------------------*/
 export async function DELETE(req: Request) {
   try {
     await connectToDB();
@@ -170,7 +236,6 @@ export async function DELETE(req: Request) {
       );
     }
 
-    // Apaga por docId (modo direto)
     if (docId) {
       const doc = await DocumentModel.findOne({ _id: docId, tenantId });
       if (!doc)
@@ -189,7 +254,6 @@ export async function DELETE(req: Request) {
       });
     }
 
-    // Apaga por name (pode haver duplicados)
     const docs = await DocumentModel.find({ tenantId, name })
       .select("_id name createdAt")
       .sort({ createdAt: -1 });
@@ -202,10 +266,8 @@ export async function DELETE(req: Request) {
     }
 
     let toDelete = docs;
-
-    // Se quiser manter apenas o mais recente
     if (keepLatest && docs.length > 1) {
-      toDelete = docs.slice(1); // mantém docs[0]
+      toDelete = docs.slice(1); // mantém o mais recente (docs[0])
     }
 
     const ids = toDelete.map((d) => d._id);

@@ -32,7 +32,7 @@ export default function ChatPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          question, // <<=== IMPORTANTE: 'question'
+          question, // IMPORTANTE
           tenantId: "demo",
         }),
       });

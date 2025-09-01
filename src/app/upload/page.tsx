@@ -1,54 +1,85 @@
+// src/app/upload/page.tsx
 "use client";
+export const dynamic = "force-dynamic";
 
 import { useState } from "react";
 
-export default function UploadPage() {
-  const [file, setFile] = useState<File | null>(null);
-  const [tenantId, setTenantId] = useState("demo");
-  const [log, setLog] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
+type Tab = "pdf" | "text";
 
-  function push(msg: string) {
-    setLog((l) => [...l, msg]);
+export default function UploadPage() {
+  console.log("UI build: tabs PDF+Texto carregada"); // marcador visual de versão
+  const [tab, setTab] = useState<Tab>("pdf");
+
+  // comuns
+  const [tenantId, setTenantId] = useState("demo");
+  const [busy, setBusy] = useState(false);
+  const [log, setLog] = useState<string[]>([]);
+  const push = (m: string) => setLog((l) => [...l, m]);
+
+  // PDF
+  const [file, setFile] = useState<File | null>(null);
+
+  // Texto
+  const [seedName, setSeedName] = useState("seed-manual");
+  const [seedText, setSeedText] = useState("");
+
+  async function backfill() {
+    push("Gerando embeddings (pode demorar na 1ª vez)...");
+    const r = await fetch(
+      `/api/embeddings/backfill?tenantId=${encodeURIComponent(
+        tenantId
+      )}&limit=1024`,
+      { method: "POST" }
+    );
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || "Falha no backfill");
+    push(`OK: ${j.processed} chunk(s) vetorizaram.`);
+  }
+
+  async function submitPdf() {
+    if (!file) throw new Error("Selecione um PDF");
+    push("Enviando PDF...");
+    const fd = new FormData();
+    fd.append("tenantId", tenantId);
+    fd.append("file", file);
+
+    const r1 = await fetch("/api/ingest/pdf", { method: "POST", body: fd });
+    const j1 = await r1.json();
+    if (!j1.ok) throw new Error(j1.error || "Falha na ingestão do PDF");
+
+    push(`OK: documento ${j1.docId} com ${j1.chunks} chunk(s).`);
+    await backfill();
+    push("Pronto! Vá para o /chat e pergunte 👇");
+  }
+
+  async function submitText() {
+    const t = seedText.trim();
+    if (!t) throw new Error("Digite algum texto");
+    push("Criando documento de texto...");
+    const r1 = await fetch("/api/ingest/text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tenantId,
+        name: seedName || "seed-manual",
+        text: t,
+      }),
+    });
+    const j1 = await r1.json();
+    if (!j1.ok) throw new Error(j1.error || "Falha na ingestão do texto");
+
+    push(`OK: documento ${j1.docId} com ${j1.chunks} chunk(s).`);
+    await backfill();
+    push("Pronto! Vá para o /chat e pergunte 👇");
   }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!file) return;
-
     setBusy(true);
     setLog([]);
-
     try {
-      // 1) Ingestão
-      push("Enviando PDF…");
-      const fd = new FormData();
-      fd.append("tenantId", tenantId);
-      fd.append("file", file);
-
-      const r1 = await fetch("/api/ingest/pdf", { method: "POST", body: fd });
-      const j1 = await r1.json();
-      if (!j1.ok) throw new Error(j1.error || "Falha na ingestão");
-
-      push(`OK: documento ${j1.docId} com ${j1.chunks} chunk(s).`);
-
-      // 2) Backfill de embeddings (local, sem custo)
-      push(
-        "Gerando embeddings… (primeira vez pode demorar por causa do download do modelo)"
-      );
-      const r2 = await fetch(
-        `/api/embeddings/backfill?tenantId=${encodeURIComponent(
-          tenantId
-        )}&limit=1024`,
-        {
-          method: "POST",
-        }
-      );
-      const j2 = await r2.json();
-      if (!j2.ok) throw new Error(j2.error || "Falha no backfill");
-
-      push(`OK: ${j2.processed} chunk(s) vetorizado(s).`);
-      push("Pronto! Abra a página /chat e faça perguntas 👇");
+      if (tab === "pdf") await submitPdf();
+      else await submitText();
     } catch (err: any) {
       push("Erro: " + (err?.message || String(err)));
     } finally {
@@ -56,65 +87,116 @@ export default function UploadPage() {
     }
   }
 
+  const box: React.CSSProperties = {
+    maxWidth: 820,
+    margin: "40px auto",
+    padding: 16,
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+  };
+
+  const label: React.CSSProperties = {
+    display: "grid",
+    gap: 6,
+    marginBottom: 10,
+  };
+  const input: React.CSSProperties = {
+    padding: "10px 12px",
+    borderRadius: 8,
+    border: "1px solid #ccc",
+    maxWidth: 360,
+  };
+  const btn: React.CSSProperties = {
+    padding: "10px 16px",
+    borderRadius: 8,
+    border: "1px solid #222",
+    background: "#111",
+    color: "#fff",
+  };
+  const btnGhost: React.CSSProperties = {
+    padding: "10px 16px",
+    borderRadius: 8,
+    border: "1px solid #ccc",
+    textDecoration: "none",
+  };
+  const tabBtn = (active: boolean): React.CSSProperties => ({
+    padding: "8px 12px",
+    borderRadius: 8,
+    border: active ? "1px solid #111" : "1px solid #ccc",
+    background: active ? "#111" : "#fff",
+    color: active ? "#fff" : "#111",
+    cursor: "pointer",
+  });
+
   return (
-    <main
-      style={{
-        maxWidth: 820,
-        margin: "40px auto",
-        padding: 16,
-        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-      }}
-    >
-      <h1 style={{ fontSize: 28, marginBottom: 12 }}>Upload de PDF</h1>
+    <main style={box}>
+      <h1 style={{ fontSize: 28, marginBottom: 12 }}>Upload (PDF ou Texto)</h1>
+
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button onClick={() => setTab("pdf")} style={tabBtn(tab === "pdf")}>
+          PDF
+        </button>
+        <button onClick={() => setTab("text")} style={tabBtn(tab === "text")}>
+          Texto
+        </button>
+      </div>
 
       <form onSubmit={onSubmit} style={{ display: "grid", gap: 12 }}>
-        <label style={{ display: "grid", gap: 6 }}>
+        <label style={label}>
           <span>Tenant/Workspace</span>
           <input
+            style={input}
             value={tenantId}
             onChange={(e) => setTenantId(e.target.value)}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 8,
-              border: "1px solid #ccc",
-              maxWidth: 240,
-            }}
+            placeholder="demo"
           />
         </label>
 
-        <label style={{ display: "grid", gap: 6 }}>
-          <span>Arquivo PDF</span>
-          <input
-            type="file"
-            accept="application/pdf"
-            onChange={(e) => setFile(e.target.files?.[0] || null)}
-          />
-        </label>
+        {tab === "pdf" ? (
+          <label style={label}>
+            <span>Arquivo PDF</span>
+            <input
+              type="file"
+              accept="application/pdf"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+            />
+          </label>
+        ) : (
+          <>
+            <label style={label}>
+              <span>Nome do documento (opcional)</span>
+              <input
+                style={input}
+                value={seedName}
+                onChange={(e) => setSeedName(e.target.value)}
+                placeholder="seed-manual"
+              />
+            </label>
 
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            type="submit"
-            disabled={!file || busy}
-            style={{
-              padding: "10px 16px",
-              borderRadius: 8,
-              border: "1px solid #222",
-              background: "#111",
-              color: "#fff",
-            }}
-          >
+            <label style={label}>
+              <span>Texto</span>
+              <textarea
+                value={seedText}
+                onChange={(e) => setSeedText(e.target.value)}
+                rows={10}
+                style={{
+                  ...input,
+                  width: "100%",
+                  maxWidth: "100%",
+                  resize: "vertical",
+                  fontFamily: "inherit",
+                }}
+                placeholder="Cole aqui o conteúdo que deseja indexar…"
+              />
+            </label>
+          </>
+        )}
+
+        <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+          <button type="submit" disabled={busy} style={btn}>
             {busy ? "Processando…" : "Enviar e Indexar"}
           </button>
-
-          <a
-            href="/chat"
-            style={{
-              padding: "10px 16px",
-              borderRadius: 8,
-              border: "1px solid #ccc",
-              textDecoration: "none",
-            }}
-          >
+          <a href="/chat" style={btnGhost}>
             Ir para o chat →
           </a>
         </div>
